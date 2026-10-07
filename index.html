@@ -133,6 +133,27 @@ nav{ display:flex; gap:6px; }
 .btn:hover{ filter:brightness(1.12); }
 .btn.sm{ min-height:36px; font-size:12px; }
 
+/* waiting list */
+.wgrid{ display:grid; grid-template-columns:1fr; gap:12px; }
+@media (min-width:800px){ .wgrid{ grid-template-columns:repeat(3,1fr); } }
+.wcol{ background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:12px; align-self:start; }
+.wtitle{ display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:10px; }
+.wtitle b{ font-size:15px; }
+.wtitle span{ color:var(--muted); font-size:12px; }
+.wadd{ display:flex; gap:6px; margin-bottom:10px; }
+.wadd .field{ min-width:0; flex:1; }
+.wadd .btn{ min-height:48px; }
+.went{ border:1px solid var(--line); border-radius:10px; background:var(--panel2); margin-top:6px; padding:8px; }
+.went.open{ border-color:#5b7fa3; }
+.wrow{ display:flex; align-items:center; gap:8px; }
+.wn{ color:var(--muted); font-variant-numeric:tabular-nums; font-size:13px; min-width:18px; }
+.wname{ flex:1; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wpanel{ margin-top:10px; padding-top:10px; border-top:1px solid var(--line); }
+.wlbl{ font-size:11px; letter-spacing:.08em; font-weight:650; color:var(--muted); text-transform:uppercase; margin:8px 0 6px; }
+.wdev{ display:grid; grid-template-columns:repeat(auto-fill,minmax(78px,1fr)); gap:6px; }
+.wdev .btn{ background:var(--green-bg); border-color:var(--green-line); color:var(--green); }
+.wempty{ color:var(--muted); font-size:13px; padding:6px 2px; }
+
 /* modal */
 .backdrop{
   position:fixed; inset:0; background:rgba(8,9,10,.62); display:flex; align-items:center; justify-content:center;
@@ -204,6 +225,7 @@ tr:last-child td{ border-bottom:0; }
       <div class="searchbar"><input id="search" type="search" placeholder="Search customer or station..." autocomplete="off" aria-label="Search customer or station"></div>
       <div id="results"></div>
       <div id="strip" class="strip"></div>
+      <div id="waitlist"></div>
       <div id="sections"></div>
     </section>
     <section id="view-hist" hidden></section>
@@ -216,7 +238,7 @@ tr:last-child td{ border-bottom:0; }
   'use strict';
 
   /* ---------- config & storage ---------- */
-  var KEY_S = 'gsm.sessions.v1', KEY_H = 'gsm.history.v1', KEY_C = 'gsm.settings.v1';
+  var KEY_S = 'gsm.sessions.v1', KEY_H = 'gsm.history.v1', KEY_C = 'gsm.settings.v1', KEY_W = 'gsm.waitlist.v1';
   var WARN_MS = 5 * 60 * 1000;
   var GROUPS = [
     { type: 'PC',  label: 'PCs',           count: 16 },
@@ -250,16 +272,26 @@ tr:last-child td{ border-bottom:0; }
     return out;
   }
   function loadHistory() { var h = read(KEY_H, []); return Array.isArray(h) ? h : []; }
+  function loadWait() {
+    var r = read(KEY_W, {}), out = {};
+    GROUPS.forEach(function (g) {
+      var a = r && r[g.type];
+      out[g.type] = Array.isArray(a) ? a.filter(function (w) { return w && typeof w.name === 'string' && w.id; }) : [];
+    });
+    return out;
+  }
 
   var sessions = loadSessions();
   var history = loadHistory();
+  var waitlist = loadWait();
   var settings = read(KEY_C, { sound: true });
-  var ui = { view: 'dash', modal: null, queue: [], search: '' };
+  var ui = { view: 'dash', modal: null, queue: [], search: '', wl: {}, assign: null };
   var lastState = {};
 
   function saveSessions() { write(KEY_S, sessions); }
   function saveHistory() { write(KEY_H, history); }
   function saveSettings() { write(KEY_C, settings); }
+  function saveWait() { write(KEY_W, waitlist); }
 
   /* ---------- helpers ---------- */
   function $(s) { return document.querySelector(s); }
@@ -408,6 +440,48 @@ tr:last-child td{ border-bottom:0; }
     $('#sections').innerHTML = html;
   }
 
+  function renderWait() {
+    var ae = document.activeElement;
+    var fType = ae && ae.classList && ae.classList.contains('w-in') ? ae.dataset.type : null;
+    var pos = fType ? ae.selectionStart : 0;
+    var total = 0;
+    GROUPS.forEach(function (g) { total += waitlist[g.type].length; });
+    var html = '<div class="sec-head"><h2>Waiting list</h2><span>' + total + ' waiting</span></div><div class="wgrid">';
+    GROUPS.forEach(function (g) {
+      var list = waitlist[g.type];
+      var free = STATIONS.filter(function (st) { return st.type === g.type && !sessions[st.id]; });
+      html += '<div class="wcol"><div class="wtitle"><b>' + g.label + '</b><span>' + list.length + ' waiting &middot; ' + free.length + ' free</span></div>' +
+        '<div class="wadd"><input class="field w-in" data-type="' + g.type + '" maxlength="40" autocomplete="off" placeholder="Customer name" value="' + esc(ui.wl[g.type] || '') + '">' +
+        '<button class="btn primary" data-action="wadd" data-type="' + g.type + '">ADD</button></div>';
+      if (!list.length) html += '<div class="wempty">Nobody waiting.</div>';
+      list.forEach(function (w, i) {
+        var open = ui.assign && ui.assign.id === w.id;
+        html += '<div class="went' + (open ? ' open' : '') + '"><div class="wrow"><span class="wn">' + (i + 1) + '</span><span class="wname">' + esc(w.name) + '</span>' +
+          '<button class="btn sm" data-action="wassign" data-id="' + w.id + '">' + (open ? 'CLOSE' : 'ASSIGN') + '</button>' +
+          '<button class="btn sm danger" data-action="wremove" data-type="' + g.type + '" data-id="' + w.id + '" aria-label="Remove ' + esc(w.name) + '">&times;</button></div>';
+        if (open) {
+          html += '<div class="wpanel"><div class="wlbl">Duration</div><div class="chips">' +
+            [15, 30, 45, 60, 90, 120].map(function (m) {
+              return '<button type="button" class="chip' + (ui.assign.mins === m ? ' sel' : '') + '" data-action="wmins" data-val="' + m + '">' + m + ' min</button>';
+            }).join('') + '</div><div class="wlbl">Available ' + g.label + '</div>';
+          if (free.length) {
+            html += '<div class="wdev">' + free.map(function (st) {
+              return '<button class="btn" data-action="wpick" data-id="' + w.id + '" data-sid="' + st.id + '">' + st.name + '</button>';
+            }).join('') + '</div>';
+          } else html += '<div class="wempty">No available devices right now.</div>';
+          html += '</div>';
+        }
+        html += '</div>';
+      });
+      html += '</div>';
+    });
+    $('#waitlist').innerHTML = html + '</div>';
+    if (fType) {
+      var inp = document.querySelector('.w-in[data-type="' + fType + '"]');
+      if (inp) { inp.focus(); try { inp.setSelectionRange(pos, pos); } catch (e) {} }
+    }
+  }
+
   function renderResults() {
     var q = norm(ui.search), box = $('#results');
     if (!q) { box.innerHTML = ''; return; }
@@ -446,7 +520,7 @@ tr:last-child td{ border-bottom:0; }
   function updateTimers() {
     var now = Date.now();
     document.querySelectorAll('[data-sid]').forEach(function (el) {
-      var s = sessions[el.dataset.sid]; if (s) el.textContent = fmt(s.end - now);
+      var s = sessions[el.dataset.sid]; if (s && el.tagName !== 'BUTTON') el.textContent = fmt(s.end - now);
     });
     document.querySelectorAll('[data-over]').forEach(function (el) {
       var s = sessions[el.dataset.over];
@@ -459,7 +533,7 @@ tr:last-child td{ border-bottom:0; }
     var r = renderSummary();
     renderStrip();
     renderResults();
-    if (ui.view === 'dash') renderSections(); else renderHistory();
+    if (ui.view === 'dash') { renderWait(); renderSections(); } else renderHistory();
     renderTabs();
     snapshot();
     updateTimers();
@@ -572,6 +646,36 @@ tr:last-child td{ border-bottom:0; }
     saveSessions(); saveHistory(); ui.modal = null; renderModal(); renderAll(); showNextNotice();
   }
 
+  /* waiting list actions */
+  function addWait(type) {
+    var inp = document.querySelector('.w-in[data-type="' + type + '"]');
+    if (!inp) return;
+    var name = inp.value.trim();
+    if (!name) { inp.focus(); return; }
+    waitlist[type].push({ id: 'w' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name: name, added: Date.now() });
+    ui.wl[type] = '';
+    saveWait(); renderWait();
+    var again = document.querySelector('.w-in[data-type="' + type + '"]');
+    if (again) again.focus();
+  }
+  function removeWait(type, id) {
+    waitlist[type] = waitlist[type].filter(function (w) { return w.id !== id; });
+    if (ui.assign && ui.assign.id === id) ui.assign = null;
+    saveWait(); renderWait();
+  }
+  function pickWait(id, sid) {
+    var st = BY_ID[sid];
+    if (!st || sessions[sid]) { renderWait(); return; }
+    var entry = null;
+    waitlist[st.type].forEach(function (w) { if (w.id === id) entry = w; });
+    if (!entry) return;
+    var mins = ui.assign && ui.assign.id === id ? ui.assign.mins : 30, now = Date.now();
+    sessions[sid] = { customer: entry.name, start: now, end: now + mins * 60000, durationMs: mins * 60000, alerted: false };
+    waitlist[st.type] = waitlist[st.type].filter(function (w) { return w.id !== id; });
+    ui.assign = null;
+    saveSessions(); saveWait(); renderAll();
+  }
+
   document.addEventListener('click', function (e) {
     var el = e.target.closest('[data-action]'); if (!el) return;
     var a = el.dataset.action, id = el.dataset.id;
@@ -599,6 +703,11 @@ tr:last-child td{ border-bottom:0; }
         $('#f-err').textContent = '';
         if (v === 'custom') $('#f-custom').focus();
         break;
+      case 'wadd': addWait(el.dataset.type); break;
+      case 'wremove': removeWait(el.dataset.type, id); break;
+      case 'wassign': ui.assign = ui.assign && ui.assign.id === id ? null : { id: id, mins: 30 }; renderWait(); break;
+      case 'wmins': if (ui.assign) { ui.assign.mins = Number(el.dataset.val); renderWait(); } break;
+      case 'wpick': pickWait(id, el.dataset.sid); break;
     }
   });
 
@@ -609,6 +718,12 @@ tr:last-child td{ border-bottom:0; }
       e.preventDefault();
       if (ui.modal.type === 'start') startSession(); else if (ui.modal.type === 'extend') extendSession();
     }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('w-in')) { e.preventDefault(); addWait(e.target.dataset.type); }
+  });
+  document.addEventListener('input', function (e) {
+    if (e.target.classList && e.target.classList.contains('w-in')) ui.wl[e.target.dataset.type] = e.target.value;
   });
 
   $('#search').addEventListener('input', function (e) { ui.search = e.target.value; renderResults(); updateTimers(); });
@@ -638,6 +753,7 @@ tr:last-child td{ border-bottom:0; }
   window.addEventListener('storage', function (e) {
     if (e.key === KEY_S) { sessions = loadSessions(); renderAll(); }
     else if (e.key === KEY_H) { history = loadHistory(); renderAll(); }
+    else if (e.key === KEY_W) { waitlist = loadWait(); renderAll(); }
   });
 
   renderAll();
