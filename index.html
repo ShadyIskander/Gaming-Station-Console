@@ -154,7 +154,32 @@ nav{ display:flex; gap:6px; }
 .wdev .btn{ background:var(--green-bg); border-color:var(--green-line); color:var(--green); }
 .wempty{ color:var(--muted); font-size:13px; padding:6px 2px; }
 
-/* modal */
+/* side notifications (finished sessions) */
+#notices{
+  position:fixed; z-index:40; right:12px; top:calc(env(safe-area-inset-top, 0px) + 12px);
+  width:min(320px, calc(100vw - 24px)); max-height:calc(100% - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  overflow-y:auto; display:flex; flex-direction:column; gap:8px; pointer-events:none;
+}
+.notice{
+  pointer-events:auto; background:var(--panel); border:1px solid var(--red-line); border-left:4px solid var(--red);
+  border-radius:12px; padding:12px; box-shadow:0 10px 30px rgba(0,0,0,.45);
+  animation:slidein .22s ease-out;
+}
+@keyframes slidein{ from{ transform:translateX(24px); opacity:0; } to{ transform:none; opacity:1; } }
+@media (prefers-reduced-motion:reduce){ .notice{ animation:none; } }
+.notice-head{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.notice-tag{ color:var(--red); font-size:11px; font-weight:700; letter-spacing:.08em; }
+.notice-title{ font-weight:650; font-size:15px; margin:2px 0; overflow-wrap:anywhere; }
+.notice-sub{ color:var(--muted); font-size:13px; font-variant-numeric:tabular-nums; }
+.notice .x{
+  min-width:36px; min-height:36px; margin:-6px -6px 0 0; border:0; background:none; color:var(--muted);
+  font-size:20px; line-height:1; cursor:pointer; border-radius:8px;
+}
+.notice .x:hover{ background:var(--panel2); color:var(--text); }
+.notice .btnrow{ margin-top:10px; gap:8px; }
+.notice .btnrow .btn{ min-height:42px; font-size:12px; }
+
+/* modal (only for actions staff trigger) */
 .backdrop{
   position:fixed; inset:0; background:rgba(8,9,10,.62); display:flex; align-items:center; justify-content:center;
   padding:16px; z-index:50; overflow-y:auto;
@@ -179,7 +204,6 @@ nav{ display:flex; gap:6px; }
 .err{ color:var(--red); font-size:13px; min-height:18px; margin-top:8px; }
 .btnrow{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px; }
 .btnrow .btn{ min-height:50px; font-size:14px; }
-.btnrow.one{ grid-template-columns:1fr; }
 .bigtime{ font-size:56px; font-weight:650; font-variant-numeric:tabular-nums; text-align:center; margin:10px 0 4px; line-height:1.1; }
 .bigtime.warn{ color:var(--amber); }
 .bigtime.finished{ color:var(--red); }
@@ -231,6 +255,7 @@ tr:last-child td{ border-bottom:0; }
     <section id="view-hist" hidden></section>
   </main>
 </div>
+<aside id="notices" aria-live="polite" aria-label="Finished sessions"></aside>
 <div id="modal-root"></div>
 
 <script>
@@ -285,7 +310,7 @@ tr:last-child td{ border-bottom:0; }
   var history = loadHistory();
   var waitlist = loadWait();
   var settings = read(KEY_C, { sound: true });
-  var ui = { view: 'dash', modal: null, queue: [], search: '', wl: {}, assign: null };
+  var ui = { view: 'dash', modal: null, notices: [], search: '', wl: {}, assign: null };
   var lastState = {};
 
   function saveSessions() { write(KEY_S, sessions); }
@@ -325,6 +350,7 @@ tr:last-child td{ border-bottom:0; }
     STATIONS.forEach(function (st) { lastState[st.id] = stateOf(sessions[st.id], now); });
   }
   function norm(s) { return String(s).toLowerCase().replace(/\s+/g, ''); }
+  function dropNotice(id) { ui.notices = ui.notices.filter(function (x) { return x !== id; }); }
 
   /* ---------- sound ---------- */
   var actx = null, audioBlocked = false;
@@ -409,6 +435,22 @@ tr:last-child td{ border-bottom:0; }
       }
     });
     $('#strip').innerHTML = items.length ? '<span class="t">TIME FINISHED</span>' + items.join('') : '';
+  }
+
+  /* side notifications: stack on the right, never block the screen */
+  function renderNotices() {
+    var now = Date.now();
+    ui.notices = ui.notices.filter(function (id) { var s = sessions[id]; return s && s.end <= now; });
+    $('#notices').innerHTML = ui.notices.map(function (id) {
+      var s = sessions[id], st = BY_ID[id];
+      return '<div class="notice" role="status">' +
+        '<div class="notice-head"><div><div class="notice-tag">TIME FINISHED</div>' +
+        '<div class="notice-title">' + esc(s.customer) + ' &middot; ' + st.name + '</div>' +
+        '<div class="notice-sub">over by <span data-over="' + id + '"></span></div></div>' +
+        '<button class="x" data-action="dismiss" data-id="' + id + '" aria-label="Dismiss notification">&times;</button></div>' +
+        '<div class="btnrow"><button class="btn warnbtn" data-action="extend" data-id="' + id + '">EXTEND</button>' +
+        '<button class="btn danger" data-action="end" data-id="' + id + '">END SESSION</button></div></div>';
+    }).join('');
   }
 
   function cardHtml(st) {
@@ -524,7 +566,8 @@ tr:last-child td{ border-bottom:0; }
     });
     document.querySelectorAll('[data-over]').forEach(function (el) {
       var s = sessions[el.dataset.over];
-      el.textContent = s && s.end < now ? 'over by ' + fmt(now - s.end) : '';
+      var inNotice = el.closest('.notice');
+      el.textContent = s && s.end < now ? (inNotice ? fmt(now - s.end) : 'over by ' + fmt(now - s.end)) : '';
     });
     $('#clock').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
@@ -532,6 +575,7 @@ tr:last-child td{ border-bottom:0; }
   function renderAll() {
     var r = renderSummary();
     renderStrip();
+    renderNotices();
     renderResults();
     if (ui.view === 'dash') { renderWait(); renderSections(); } else renderHistory();
     renderTabs();
@@ -540,7 +584,7 @@ tr:last-child td{ border-bottom:0; }
     document.title = (r.fin ? '(' + r.fin + ') Time finished - ' : '') + 'Station Console';
   }
 
-  /* ---------- modals ---------- */
+  /* ---------- modals (opened only by staff actions) ---------- */
   function chipsHtml(opts, sel) {
     return '<div class="chips">' + opts.map(function (m) {
       return '<button type="button" class="chip' + (sel === m ? ' sel' : '') + '" data-action="chip" data-val="' + m + '">' + m + ' min</button>';
@@ -572,12 +616,6 @@ tr:last-child td{ border-bottom:0; }
       case 'end':
         return '<h2>End ' + esc(s.customer) + '&rsquo;s session on ' + st.name + '?</h2><p class="sub">The station becomes available and the session is saved to history.</p>' +
           '<div class="btnrow"><button class="btn" data-action="close">CANCEL</button><button class="btn danger" data-action="confirm-end">END SESSION</button></div>';
-      case 'finished':
-        return '<div class="center"><div class="badge" style="color:var(--red);letter-spacing:.08em;font-weight:700;font-size:12px">TIME FINISHED</div>' +
-          '<h2 style="font-size:20px;margin:8px 0 4px">' + esc(s.customer) + '&rsquo;s time on ' + st.name + ' has finished.</h2>' +
-          (ui.queue.length ? '<div class="muted" style="font-size:13px">' + ui.queue.length + ' more finished after this</div>' : '') + '</div>' +
-          '<div class="btnrow" style="margin-top:18px"><button class="btn warnbtn" data-action="extend" data-id="' + st.id + '">EXTEND TIME</button><button class="btn danger" data-action="end" data-id="' + st.id + '">END SESSION</button></div>' +
-          '<button class="linkbtn" data-action="close">Decide later</button>';
       case 'clear':
         return '<h2>Clear all history?</h2><p class="sub">This removes ' + history.length + ' saved session' + (history.length === 1 ? '' : 's') + ' and cannot be undone.</p>' +
           '<div class="btnrow"><button class="btn" data-action="close">CANCEL</button><button class="btn danger" data-action="confirm-clear">CLEAR HISTORY</button></div>';
@@ -594,18 +632,11 @@ tr:last-child td{ border-bottom:0; }
     var f = $('#f-name');
     if (f) f.focus();
     else { var p = root.querySelector('.btn.primary, .btn.danger, .btn.warnbtn'); if (p && m.type !== 'detail') p.focus(); }
+    updateTimers();
   }
 
   function openModal(m) { ui.modal = m; renderModal(); }
-  function closeModal() { ui.modal = null; renderModal(); showNextNotice(); }
-
-  function showNextNotice() {
-    if (ui.modal) return;
-    while (ui.queue.length) {
-      var id = ui.queue.shift(), s = sessions[id];
-      if (s && s.end <= Date.now()) { openModal({ type: 'finished', id: id }); return; }
-    }
-  }
+  function closeModal() { ui.modal = null; renderModal(); }
 
   function readMinutes() {
     var m = ui.modal, err = $('#f-err');
@@ -633,8 +664,8 @@ tr:last-child td{ border-bottom:0; }
     s.end = Math.max(s.end, now) + mins * 60000;
     s.durationMs += mins * 60000;
     s.alerted = false;
-    ui.queue = ui.queue.filter(function (x) { return x !== m.id; });
-    saveSessions(); ui.modal = null; renderModal(); renderAll(); showNextNotice();
+    dropNotice(m.id);
+    saveSessions(); ui.modal = null; renderModal(); renderAll();
   }
   function endSession() {
     var m = ui.modal, s = sessions[m.id]; if (!s) { closeModal(); return; }
@@ -642,8 +673,8 @@ tr:last-child td{ border-bottom:0; }
     history.unshift({ customer: s.customer, station: st.name, type: st.type, start: s.start, durationMs: s.durationMs, end: Date.now() });
     if (history.length > 2000) history.length = 2000;
     delete sessions[m.id];
-    ui.queue = ui.queue.filter(function (x) { return x !== m.id; });
-    saveSessions(); saveHistory(); ui.modal = null; renderModal(); renderAll(); showNextNotice();
+    dropNotice(m.id);
+    saveSessions(); saveHistory(); ui.modal = null; renderModal(); renderAll();
   }
 
   /* waiting list actions */
@@ -685,6 +716,7 @@ tr:last-child td{ border-bottom:0; }
       case 'open': openModal({ type: 'detail', id: id }); break;
       case 'extend': openModal({ type: 'extend', id: id, sel: 30 }); break;
       case 'end': openModal({ type: 'end', id: id }); break;
+      case 'dismiss': dropNotice(id); renderNotices(); updateTimers(); break;
       case 'close': closeModal(); break;
       case 'confirm-start': startSession(); break;
       case 'confirm-extend': extendSession(); break;
@@ -736,11 +768,15 @@ tr:last-child td{ border-bottom:0; }
       if (lastState[st.id] !== state) changed = true;
       if (s && state === 'finished' && !s.alerted) { s.alerted = true; fin.push(st.id); }
     });
-    if (fin.length) { saveSessions(); fin.forEach(function (id) { ui.queue.push(id); }); playAlarm(3); }
+    if (fin.length) {
+      saveSessions();
+      fin.forEach(function (id) { if (ui.notices.indexOf(id) === -1) ui.notices.push(id); });
+      playAlarm(3);
+    }
     if (changed || fin.length) {
+      /* re-render the page behind; an open dialog is left alone so typing is never interrupted */
       renderAll();
       if (ui.modal && ui.modal.type === 'detail') renderModal();
-      showNextNotice();
     }
     updateTimers();
   }
